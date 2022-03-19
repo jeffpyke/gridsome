@@ -113,7 +113,8 @@ module.exports = async (context, options = {}) => {
   config.publicPath = config.pathPrefix ? `${config.pathPrefix}/` : '/'
   config.staticDir = resolve('static')
 
-  config.outputDir = resolve(localConfig.outputDir || localConfig.outDir || 'dist')
+  config.outputDir = resolve(localConfig.outputDir || 'dist')
+  config.emptyOutputDir = localConfig.emptyOutputDir !== false
   config.assetsDir = path.join(config.outputDir, assetsDir)
   config.imagesDir = path.join(config.assetsDir, 'static')
   config.filesDir = path.join(config.assetsDir, 'files')
@@ -121,15 +122,18 @@ module.exports = async (context, options = {}) => {
   config.appPath = path.resolve(__dirname, '../../app')
 
   // Cache paths
-  if (process.versions.pnp === '1') {
+
+  if (localConfig._tmpDir) {
+    config.cacheDir = path.resolve(context, localConfig._tmpDir)
+  } else if (process.versions.pnp === '1') {
     config.cacheDir = resolve('.pnp/.cache/gridsome')
   } else if (process.versions.pnp === '3') {
     config.cacheDir = resolve('.yarn/.cache/gridsome')
   } else {
     config.cacheDir = resolve('node_modules/.cache/gridsome')
   }
+
   config.appCacheDir = path.join(config.cacheDir, 'app')
-  config.imageCacheDir = path.join(config.cacheDir, 'assets')
 
   config.maxImageWidth = localConfig.maxImageWidth || 2560
   config.imageExtensions = SUPPORTED_IMAGE_TYPES
@@ -207,22 +211,33 @@ function registerTsExtension() {
   }
 }
 
-function resolveEnv (context) {
-  const env = process.env.NODE_ENV || 'development'
-  const envPath = path.resolve(context, '.env')
-  const envPathByMode = path.resolve(context, `.env.${env}`)
-  const readPath = fs.existsSync(envPathByMode) ? envPathByMode : envPath
+function resolveEnv(context) {
+  const mode = process.env.NODE_ENV || 'development'
+  const envFiles = [
+    /** default file */ `.env`,
+    /** local file */ `.env.local`,
+    /** mode file */ `.env.${mode}`,
+    /** mode local file */ `.env.${mode}.local`
+  ].map(p => path.resolve(context, p))
 
-  let parsed = {}
-  try {
-    parsed = dotenv.parse(fs.readFileSync(readPath, 'utf8'))
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.error('There was a problem processing the .env file', err)
+  const variables = {}
+
+  for (const file of envFiles) {
+    try {
+      const parsed = dotenv.parse(fs.readFileSync(file), {
+        debug: !!process.env.DEBUG || undefined
+      })
+
+      Object.assign(variables, parsed)
+    } catch (err) {
+      if (err.code !== 'ENOENT')
+        console.error(`There was a problem processing the ${file} file`, err)
     }
   }
 
-  return parsed
+  // Existing environment variables have precedence
+  // https://12factor.net/config
+  return Object.assign(variables, process.env)
 }
 
 function resolvePkg (context) {
@@ -537,6 +552,7 @@ function normalizeImages (config = {}) {
       defaultQuality: Joi.number().default(75).min(0).max(100),
       backgroundColor: Joi.string().allow(null).default(null),
       defaultBlur: Joi.number().default(defaultPlaceholder.defaultBlur),
+      removeUnused: Joi.boolean().default(true),
       placeholder: Joi.alternatives()
         .default(defaultPlaceholder)
         .try([
